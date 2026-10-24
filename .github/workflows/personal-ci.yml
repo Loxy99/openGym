@@ -1,0 +1,79 @@
+name: Personal CI
+on:
+  push:
+    branches: [personal, 'update/**', 'feature/**']
+  pull_request:
+    branches: [personal]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: personal-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: node --test tools/migration/*.test.mjs
+      # The frontend migration integration test starts the real API server.
+      - run: npm ci --omit=optional --no-audit --no-fund
+        working-directory: api
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: frontend
+      - run: npm test -- --maxWorkers=2
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: node scripts/check-locales.mjs
+        working-directory: frontend
+      - run: npm run test:fatigue-probe
+        working-directory: frontend
+      - run: npm ci --omit=optional --no-audit --no-fund
+        working-directory: api
+      - run: node --test --test-concurrency=2 test/*.test.js
+        working-directory: api
+      - run: node api/scripts/check-core-loadable.mjs
+      - run: node scripts/build-coach-assets.mjs --check
+      - run: npm ci --ignore-scripts --no-audit --no-fund && npm test && npm run check:node-loadable
+        working-directory: mcp
+      - name: Validate isolated deployment
+        env:
+          API_IMAGE: opengym-api:ci
+          WEB_IMAGE: opengym-web:ci
+          DATA_DIR: /var/lib/opengym-ci
+          RP_ID: localhost
+          ORIGIN: http://localhost:3180
+        run: docker compose -f deploy/compose.selfhost.yaml config -q
+  images:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/personal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build exact source and boot both images
+        env:
+          API_IMAGE: ghcr.io/loxy99/opengym-api:sha-${{ github.sha }}
+          WEB_IMAGE: ghcr.io/loxy99/opengym-web:sha-${{ github.sha }}
+          DATA_DIR: /home/runner/work/_temp/opengym-ci-data
+          RP_ID: localhost
+          ORIGIN: http://localhost:3180
+        run: |
+          docker build --target default --build-arg VCS_REF="$GITHUB_SHA" --label org.opencontainers.image.source=https://github.com/Loxy99/openGym -t "$API_IMAGE" api
+          docker build -f web/Dockerfile --build-arg VCS_REF="$GITHUB_SHA" --build-arg APP_BUILD="${GITHUB_SHA:0:12}" --label org.opencontainers.image.source=https://github.com/Loxy99/openGym -t "$WEB_IMAGE" .
+          mkdir -m 700 -p "$DATA_DIR"
+          docker compose -p opengym-ci -f deploy/compose.selfhost.yaml up -d --wait --wait-timeout 120
+          curl --fail --retry 10 --retry-delay 2 --retry-connrefused http://localhost:3180/api/health
+          curl --fail http://localhost:3180/ >/dev/null
+          docker compose -p opengym-ci -f deploy/compose.selfhost.yaml down
+          printf '%s' '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          docker push "$API_IMAGE"
+          docker push "$WEB_IMAGE"

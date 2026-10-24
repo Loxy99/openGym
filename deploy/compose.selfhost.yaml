@@ -1,0 +1,59 @@
+# Immutable images built from this fork. No upstream latest/edge images.
+services:
+  api:
+    image: ${API_IMAGE:?Set an immutable API image reference}
+    restart: unless-stopped
+    init: true
+    environment:
+      PORT: "3000"
+      DATA_DIR: /data
+      RP_ID: ${RP_ID:?Set the final HTTPS hostname}
+      ORIGIN: ${ORIGIN:?Set the exact HTTPS origin}
+      RP_NAME: openGym
+      COACH_DISABLED: "1"
+      PASSWORD_LOGIN: "0"
+      INVITE_ONLY: "1"
+      ALLOW_GUEST: "0"
+      FIRST_USER_ADMIN: "0"
+      TRUST_PROXY: "1"
+      AUDIT_IP: "off"
+      MEDIA_QUOTA_MB: "256"
+      SESSION_DAYS: "90"
+    volumes:
+      - ${DATA_DIR:?Set a dedicated instance data directory}:/data
+    mem_limit: 256m
+    healthcheck:
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+      start_interval: 2s
+    cpus: 1.0
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
+  web:
+    image: ${WEB_IMAGE:?Set an immutable web image reference}
+    restart: unless-stopped
+    depends_on: [api]
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3180}:8080"
+    environment:
+      NGINX_PORT: "8080"
+      BACKEND: api
+      PORT: "3000"
+      BASE_PATH: ""
+      RESOLVER: 127.0.0.11
+    mem_limit: 96m
+    healthcheck:
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+      start_interval: 2s
+    cpus: 0.5
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
